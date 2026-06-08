@@ -8,15 +8,11 @@ This repository distributes the automated initialization script `setup-hooks.sh`
 
 If a developer attempts to push code directly to `main`, `dev`, or `test`, the hook terminates the process on their local machine before any data reaches GitHub.
 
----
-
 ## Prerequisites
 
 * Unix-based terminal environment (Linux, macOS, WSL)
 * Project must be initialized with a root `package.json` file
 * Git initialized locally (`git init`)
-
----
 
 ## Installation & Usage
 
