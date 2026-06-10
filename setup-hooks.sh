@@ -8,11 +8,13 @@ if [ ! -f "package.json" ]; then
   exit 1
 fi
 
-# Backup existing pre-commit hook BEFORE husky init tramples it
-PRE_COMMIT_BACKUP=""
+# Backup existing pre-commit hook to a temp file BEFORE husky init tramples it
+TMPFILE=$(mktemp)
+PRE_COMMIT_EXISTS=false
 if [ -s ".husky/pre-commit" ]; then
-  PRE_COMMIT_BACKUP=$(cat .husky/pre-commit)
-  echo "[INFO] Existing pre-commit hook backed up. Will restore after init."
+  cp .husky/pre-commit "$TMPFILE"
+  PRE_COMMIT_EXISTS=true
+  echo "[INFO] Existing pre-commit hook backed up to $TMPFILE"
 fi
 
 echo "Installing Husky and generating configurations..."
@@ -20,9 +22,9 @@ npx husky init
 mkdir -p .husky
 
 # --- Restore or inject pre-commit hook ---
-if [ -n "$PRE_COMMIT_BACKUP" ]; then
+if [ "$PRE_COMMIT_EXISTS" = true ]; then
   echo "[INFO] Restoring original pre-commit hook..."
-  echo "$PRE_COMMIT_BACKUP" > .husky/pre-commit
+  cp "$TMPFILE" .husky/pre-commit
   chmod +x .husky/pre-commit
 else
   if node -e "const pkg = require('./package.json'); process.exit(pkg.scripts && pkg.scripts.test ? 0 : 1);" 2>/dev/null; then
@@ -36,6 +38,9 @@ EOF
     echo "[INFO] No 'test' script found in package.json. Skipping pre-commit hook creation."
   fi
 fi
+
+# Cleanup temp file
+rm -f "$TMPFILE"
 # -----------------------------------------
 
 echo "Injecting local branch protection constraints..."
