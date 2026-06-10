@@ -90,17 +90,21 @@ cat << 'EOF' > .husky/pre-push
 
 PROTECTED_BRANCHES="main dev test"
 
+block_push() {
+  echo "==========================================================" >&2
+  echo "[CRITICAL ERROR] Direct pushes to [main, dev, test] are forbidden." >&2
+  echo "Move your changes to a feature branch and submit a Pull Request." >&2
+  echo "==========================================================" >&2
+  exit 1
+}
+
 # Method 1: stdin (CLI git push)
 while read local_ref local_sha remote_ref remote_sha
 do
   branch=$(echo "$remote_ref" | sed 's|refs/heads/||')
   for protected in $PROTECTED_BRANCHES; do
     if [ "$branch" = "$protected" ]; then
-      echo "=========================================================="
-      echo "[CRITICAL ERROR] Direct pushes to [main, dev, test] are forbidden."
-      echo "Move your changes to a feature branch and submit a Pull Request."
-      echo "=========================================================="
-      exit 1
+      block_push
     fi
   done
 done
@@ -109,11 +113,7 @@ done
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
 for protected in $PROTECTED_BRANCHES; do
   if [ "$CURRENT_BRANCH" = "$protected" ]; then
-    echo "=========================================================="
-    echo "[CRITICAL ERROR] Direct pushes to [main, dev, test] are forbidden."
-    echo "Move your changes to a feature branch and submit a Pull Request."
-    echo "=========================================================="
-    exit 1
+    block_push
   fi
 done
 
