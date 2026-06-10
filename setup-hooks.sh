@@ -1,13 +1,18 @@
 #!/bin/bash
-# Target the directory passed as an argument, default to the current directory
 TARGET_DIR="${1:-.}"
 cd "$TARGET_DIR" || { echo "Target directory not found."; exit 1; }
 
-# Fail-safe check for Node.js environment
 if [ ! -f "package.json" ]; then
   echo "[ERROR] package.json not found in $(pwd)."
   echo "Ensure you are running this script inside a valid React / Node.js project root."
   exit 1
+fi
+
+# Snapshot pre-commit existence BEFORE husky init can create/overwrite it
+PRE_COMMIT_EXISTED=false
+if [ -s ".husky/pre-commit" ]; then
+  PRE_COMMIT_EXISTED=true
+  echo "[INFO] Existing pre-commit hook detected. Will preserve it."
 fi
 
 echo "Installing Husky and generating configurations..."
@@ -15,9 +20,8 @@ npx husky init
 mkdir -p .husky
 
 # --- Conditional Pre-Commit Hook Injection ---
-# FIX 2: Only write pre-commit hook if the file doesn't already exist or is empty
-if [ -s ".husky/pre-commit" ]; then
-  echo "[INFO] Pre-commit hook already exists and is non-empty. Skipping to preserve existing config."
+if [ "$PRE_COMMIT_EXISTED" = true ]; then
+  echo "[INFO] Skipping pre-commit hook — existing hook preserved."
 else
   if node -e "const pkg = require('./package.json'); process.exit(pkg.scripts && pkg.scripts.test ? 0 : 1);" 2>/dev/null; then
     echo "Detected 'test' script in package.json. Injecting pre-commit hook..."
@@ -33,11 +37,6 @@ fi
 # ---------------------------------------------
 
 echo "Injecting local branch protection constraints..."
-
-# FIX 1: Dual-mode branch check — handles both CLI and GUI git clients
-# GUI clients (VS Code, GitKraken, etc.) don't reliably pipe stdin to hooks,
-# so the while-read loop silently exits 0. We defensively check the current
-# branch via git rev-parse as a fallback that always fires.
 cat << 'EOF' > .husky/pre-push
 #!/bin/sh
 
@@ -59,8 +58,6 @@ do
 done
 
 # --- Method 2: current branch check (fallback for GUI clients) ---
-# When GUI tools bypass stdin, we catch the push by checking which
-# local branch is currently checked out and being pushed.
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
 for protected in $PROTECTED_BRANCHES; do
   if [ "$CURRENT_BRANCH" = "$protected" ]; then
