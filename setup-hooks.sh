@@ -4,41 +4,43 @@ TARGET_DIR="${1:-.}"
 cd "$TARGET_DIR" || { echo "Target directory not found."; exit 1; }
 
 # --- Detect package manager from lockfile ---
-# Checks current dir first, then root (for monorepos where lockfile lives at root)
+# Checks local dir first (handles hybrid monorepos where each package has its own PM)
+# Falls back to root if no lockfile found locally
 detect_pm() {
-  local dir="${1:-.}"
-  if [ -f "$dir/bun.lockb" ] || [ -f "$dir/bun.lock" ]; then
-    echo "bun"
-  elif [ -f "$dir/pnpm-lock.yaml" ]; then
-    echo "pnpm"
-  elif [ -f "$dir/yarn.lock" ]; then
-    echo "yarn"
-  elif [ -f "$dir/package-lock.json" ]; then
-    echo "npm"
-  else
-    echo "npm"
-  fi
+  local check_dir="$1"
+  local fallback_dir="$2"
+
+  for dir in "$check_dir" "$fallback_dir"; do
+    [ -z "$dir" ] && continue
+    if [ -f "$dir/bun.lockb" ] || [ -f "$dir/bun.lock" ]; then
+      echo "bun"; return
+    elif [ -f "$dir/pnpm-lock.yaml" ]; then
+      echo "pnpm"; return
+    elif [ -f "$dir/yarn.lock" ]; then
+      echo "yarn"; return
+    elif [ -f "$dir/package-lock.json" ]; then
+      echo "npm"; return
+    fi
+  done
+
+  echo "npm" # hard fallback
 }
 
 # --- Core setup logic, runs per package ---
 setup_husky() {
   local PKG_DIR="$1"
-  local ROOT_DIR="$2"  # always the top-level dir (lockfile lives here in monorepos)
+  local ROOT_DIR="$2"
 
   echo ""
   echo "▶ Setting up hooks in: $PKG_DIR"
 
   cd "$PKG_DIR" || { echo "[WARN] Could not cd into $PKG_DIR, skipping."; return; }
 
-  # Detect PM — prefer lockfile in root, fall back to local
+  # Local lockfile takes priority; root lockfile is fallback
   local PM
-  PM=$(detect_pm "$ROOT_DIR")
-  if [ "$PM" = "npm" ]; then
-    PM=$(detect_pm ".")
-  fi
+  PM=$(detect_pm "$PKG_DIR" "$ROOT_DIR")
   echo "[INFO] Package manager: $PM"
 
-  # --- Install commands ---
   local INSTALL_CMD RUN_CMD
   case "$PM" in
     bun)  INSTALL_CMD="bun add --dev husky" ;;
@@ -132,7 +134,7 @@ EOF
 }
 
 # -------------------------------------------------------
-# Entry point: discover where to run
+# Entry point
 # -------------------------------------------------------
 ROOT_DIR=$(pwd)
 
@@ -141,23 +143,25 @@ if [ ! -f "package.json" ] && [ -z "$(find . -maxdepth 2 -name 'package.json' 2>
   exit 1
 fi
 
-# Collect all targets: root + 1 level deep subdirs that have package.json
+# Collect targets: root + 1 level deep, skip node_modules
 TARGETS=()
 [ -f "package.json" ] && TARGETS+=("$ROOT_DIR")
 while IFS= read -r pkg; do
   dir=$(dirname "$pkg")
-  # Skip node_modules anywhere in the path
   case "$dir" in
     *node_modules*) continue ;;
   esac
   [ "$dir" != "$ROOT_DIR" ] && TARGETS+=("$dir")
 done < <(find . -maxdepth 2 -name "package.json" ! -path "*/node_modules/*" 2>/dev/null)
 
-# Deduplicate
 TARGETS=($(printf '%s\n' "${TARGETS[@]}" | sort -u))
 
 echo "Found ${#TARGETS[@]} package(s) to configure:"
-for t in "${TARGETS[@]}"; do echo "  - $t"; done
+for t in "${TARGETS[@]}"; do
+  # Show which PM each target will use for clarity
+  pm=$(detect_pm "$t" "$ROOT_DIR")
+  echo "  - $t  ($pm)"
+done
 
 for target in "${TARGETS[@]}"; do
   setup_husky "$target" "$ROOT_DIR"
