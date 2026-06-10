@@ -19,6 +19,22 @@ npx husky init
 # Ensure the target directory exists for hooks
 mkdir -p .husky
 
+# --- Conditional Pre-Commit Hook Injection ---
+# Check if the 'test' script exists inside package.json using a quick Node script
+if node -e "const pkg = require('./package.json'); process.exit(pkg.scripts && pkg.scripts.test ? 0 : 1);" 2>/dev/null; then
+  echo "Detected 'test' script in package.json. Injecting pre-commit hook..."
+  
+  cat << 'EOF' > .husky/pre-commit
+#!/bin/sh
+npm test
+EOF
+
+  chmod +x .husky/pre-commit
+else
+  echo "[INFO] No 'test' script found in package.json. Skipping pre-commit hook creation."
+fi
+# ---------------------------------------------
+
 echo "Injecting local branch protection constraints..."
 cat << 'EOF' > .husky/pre-push
 #!/bin/sh
@@ -42,6 +58,7 @@ EOF
 chmod +x .husky/pre-push
 
 echo "=========================================================="
-echo "[SUCCESS] Pre-push validation enforced on main, dev, and test."
+echo "[SUCCESS] Configuration complete."
+echo "Pre-push validation enforced on main, dev, and test."
 echo "Remember to run 'npm install' or 'yarn install' if you haven't already."
 echo "=========================================================="
