@@ -1,8 +1,6 @@
 #!/bin/bash
-
 # Target the directory passed as an argument, default to the current directory
 TARGET_DIR="${1:-.}"
-
 cd "$TARGET_DIR" || { echo "Target directory not found."; exit 1; }
 
 # Fail-safe check for Node.js environment
@@ -13,36 +11,59 @@ if [ ! -f "package.json" ]; then
 fi
 
 echo "Installing Husky and generating configurations..."
-# Automatically patches package.json with the prepare script and installs dependencies
 npx husky init
-
-# Ensure the target directory exists for hooks
 mkdir -p .husky
 
 # --- Conditional Pre-Commit Hook Injection ---
-# Check if the 'test' script exists inside package.json using a quick Node script
-if node -e "const pkg = require('./package.json'); process.exit(pkg.scripts && pkg.scripts.test ? 0 : 1);" 2>/dev/null; then
-  echo "Detected 'test' script in package.json. Injecting pre-commit hook..."
-  
-  cat << 'EOF' > .husky/pre-commit
+# FIX 2: Only write pre-commit hook if the file doesn't already exist or is empty
+if [ -s ".husky/pre-commit" ]; then
+  echo "[INFO] Pre-commit hook already exists and is non-empty. Skipping to preserve existing config."
+else
+  if node -e "const pkg = require('./package.json'); process.exit(pkg.scripts && pkg.scripts.test ? 0 : 1);" 2>/dev/null; then
+    echo "Detected 'test' script in package.json. Injecting pre-commit hook..."
+    cat << 'EOF' > .husky/pre-commit
 #!/bin/sh
 npm test
 EOF
-
-  chmod +x .husky/pre-commit
-else
-  echo "[INFO] No 'test' script found in package.json. Skipping pre-commit hook creation."
+    chmod +x .husky/pre-commit
+  else
+    echo "[INFO] No 'test' script found in package.json. Skipping pre-commit hook creation."
+  fi
 fi
 # ---------------------------------------------
 
 echo "Injecting local branch protection constraints..."
+
+# FIX 1: Dual-mode branch check — handles both CLI and GUI git clients
+# GUI clients (VS Code, GitKraken, etc.) don't reliably pipe stdin to hooks,
+# so the while-read loop silently exits 0. We defensively check the current
+# branch via git rev-parse as a fallback that always fires.
 cat << 'EOF' > .husky/pre-push
 #!/bin/sh
 
-# Intercept the target remote tracking branches during execution
+PROTECTED_BRANCHES="main dev test"
+
+# --- Method 1: stdin-based check (works for CLI git push) ---
 while read local_ref local_sha remote_ref remote_sha
 do
-  if [ "$remote_ref" = "refs/heads/main" ] || [ "$remote_ref" = "refs/heads/dev" ] || [ "$remote_ref" = "refs/heads/test" ]; then
+  branch=$(echo "$remote_ref" | sed 's|refs/heads/||')
+  for protected in $PROTECTED_BRANCHES; do
+    if [ "$branch" = "$protected" ]; then
+      echo "=========================================================="
+      echo "[CRITICAL ERROR] Direct pushes to [main, dev, test] are forbidden."
+      echo "Move your changes to a feature branch and submit a Pull Request."
+      echo "=========================================================="
+      exit 1
+    fi
+  done
+done
+
+# --- Method 2: current branch check (fallback for GUI clients) ---
+# When GUI tools bypass stdin, we catch the push by checking which
+# local branch is currently checked out and being pushed.
+CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+for protected in $PROTECTED_BRANCHES; do
+  if [ "$CURRENT_BRANCH" = "$protected" ]; then
     echo "=========================================================="
     echo "[CRITICAL ERROR] Direct pushes to [main, dev, test] are forbidden."
     echo "Move your changes to a feature branch and submit a Pull Request."
@@ -54,7 +75,6 @@ done
 exit 0
 EOF
 
-# Grant absolute execution permission across UNIX-based environments
 chmod +x .husky/pre-push
 
 echo "=========================================================="
