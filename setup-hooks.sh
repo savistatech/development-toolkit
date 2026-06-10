@@ -8,48 +8,47 @@ if [ ! -f "package.json" ]; then
   exit 1
 fi
 
-# Backup existing pre-commit hook to a temp file BEFORE husky init tramples it
-TMPFILE=$(mktemp)
-PRE_COMMIT_EXISTS=false
-if [ -s ".husky/pre-commit" ]; then
-  cp .husky/pre-commit "$TMPFILE"
-  PRE_COMMIT_EXISTS=true
-  echo "[INFO] Existing pre-commit hook backed up to $TMPFILE"
+echo "Installing Husky..."
+npm install --save-dev husky
+
+# Add prepare script to package.json only if not already present
+if ! node -e "const p=require('./package.json'); process.exit(p.scripts && p.scripts.prepare ? 0:1);" 2>/dev/null; then
+  node -e "
+    const fs=require('fs');
+    const pkg=JSON.parse(fs.readFileSync('package.json','utf8'));
+    pkg.scripts = pkg.scripts || {};
+    pkg.scripts.prepare = 'husky';
+    fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+  "
+  echo "[INFO] Added 'prepare': 'husky' to package.json"
 fi
 
-echo "Installing Husky and generating configurations..."
-npx husky init
 mkdir -p .husky
 
-# --- Restore or inject pre-commit hook ---
-if [ "$PRE_COMMIT_EXISTS" = true ]; then
-  echo "[INFO] Restoring original pre-commit hook..."
-  cp "$TMPFILE" .husky/pre-commit
-  chmod +x .husky/pre-commit
+# --- Pre-commit: only inject if file does not already exist ---
+if [ -s ".husky/pre-commit" ]; then
+  echo "[INFO] Existing pre-commit hook found. Skipping."
 else
-  if node -e "const pkg = require('./package.json'); process.exit(pkg.scripts && pkg.scripts.test ? 0 : 1);" 2>/dev/null; then
-    echo "Detected 'test' script in package.json. Injecting pre-commit hook..."
+  if node -e "const pkg=require('./package.json'); process.exit(pkg.scripts && pkg.scripts.test ? 0:1);" 2>/dev/null; then
+    echo "Detected 'test' script. Injecting pre-commit hook..."
     cat << 'EOF' > .husky/pre-commit
 #!/bin/sh
 npm test
 EOF
     chmod +x .husky/pre-commit
   else
-    echo "[INFO] No 'test' script found in package.json. Skipping pre-commit hook creation."
+    echo "[INFO] No 'test' script found. Skipping pre-commit hook creation."
   fi
 fi
 
-# Cleanup temp file
-rm -f "$TMPFILE"
-# -----------------------------------------
-
-echo "Injecting local branch protection constraints..."
+# --- Pre-push: always write (this is what this script owns) ---
+echo "Injecting branch protection pre-push hook..."
 cat << 'EOF' > .husky/pre-push
 #!/bin/sh
 
 PROTECTED_BRANCHES="main dev test"
 
-# --- Method 1: stdin-based check (works for CLI git push) ---
+# Method 1: stdin (CLI git push)
 while read local_ref local_sha remote_ref remote_sha
 do
   branch=$(echo "$remote_ref" | sed 's|refs/heads/||')
@@ -64,7 +63,7 @@ do
   done
 done
 
-# --- Method 2: current branch check (fallback for GUI clients) ---
+# Method 2: current branch fallback (GUI clients)
 CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
 for protected in $PROTECTED_BRANCHES; do
   if [ "$CURRENT_BRANCH" = "$protected" ]; then
@@ -84,5 +83,4 @@ chmod +x .husky/pre-push
 echo "=========================================================="
 echo "[SUCCESS] Configuration complete."
 echo "Pre-push validation enforced on main, dev, and test."
-echo "Remember to run 'npm install' or 'yarn install' if you haven't already."
 echo "=========================================================="
