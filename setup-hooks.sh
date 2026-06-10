@@ -1,93 +1,99 @@
 #!/bin/bash
+
 TARGET_DIR="${1:-.}"
 cd "$TARGET_DIR" || { echo "Target directory not found."; exit 1; }
 
-if [ ! -f "package.json" ]; then
-  echo "[ERROR] package.json not found in $(pwd)."
-  echo "Ensure you are running this script inside a valid React / Node.js project root."
-  exit 1
-fi
-
 # --- Detect package manager from lockfile ---
+# Checks current dir first, then root (for monorepos where lockfile lives at root)
 detect_pm() {
-  if [ -f "bun.lockb" ] || [ -f "bun.lock" ]; then
+  local dir="${1:-.}"
+  if [ -f "$dir/bun.lockb" ] || [ -f "$dir/bun.lock" ]; then
     echo "bun"
-  elif [ -f "pnpm-lock.yaml" ]; then
+  elif [ -f "$dir/pnpm-lock.yaml" ]; then
     echo "pnpm"
-  elif [ -f "yarn.lock" ]; then
+  elif [ -f "$dir/yarn.lock" ]; then
     echo "yarn"
+  elif [ -f "$dir/package-lock.json" ]; then
+    echo "npm"
   else
     echo "npm"
   fi
 }
 
-PM=$(detect_pm)
-echo "[INFO] Detected package manager: $PM"
+# --- Core setup logic, runs per package ---
+setup_husky() {
+  local PKG_DIR="$1"
+  local ROOT_DIR="$2"  # always the top-level dir (lockfile lives here in monorepos)
 
-# --- Install command per PM ---
-case "$PM" in
-  bun)  INSTALL_CMD="bun add --dev husky" ;;
-  pnpm) INSTALL_CMD="pnpm add --save-dev husky" ;;
-  yarn) INSTALL_CMD="yarn add --dev husky" ;;
-  *)    INSTALL_CMD="npm install --save-dev husky" ;;
-esac
+  echo ""
+  echo "▶ Setting up hooks in: $PKG_DIR"
 
-# --- Run command per PM ---
-case "$PM" in
-  bun)  RUN_CMD="bun run" ;;
-  pnpm) RUN_CMD="pnpm run" ;;
-  yarn) RUN_CMD="yarn" ;;
-  *)    RUN_CMD="npm run" ;;
-esac
+  cd "$PKG_DIR" || { echo "[WARN] Could not cd into $PKG_DIR, skipping."; return; }
 
-# --- Check if husky is already installed ---
-if node -e "require('husky')" 2>/dev/null; then
-  echo "[INFO] Husky already installed. Skipping installation."
-else
-  echo "Installing Husky via $PM..."
-  $INSTALL_CMD
-fi
-
-# --- Add prepare script to package.json only if not already present ---
-if ! node -e "const p=require('./package.json'); process.exit(p.scripts && p.scripts.prepare ? 0 : 1);" 2>/dev/null; then
-  node -e "
-    const fs = require('fs');
-    const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-    pkg.scripts = pkg.scripts || {};
-    pkg.scripts.prepare = 'husky';
-    fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
-  "
-  echo "[INFO] Added 'prepare': 'husky' to package.json"
-else
-  echo "[INFO] 'prepare' script already exists in package.json. Skipping."
-fi
-
-mkdir -p .husky
-
-# --- Pre-commit: only inject if file does not already exist ---
-if [ -s ".husky/pre-commit" ]; then
-  echo "[INFO] Existing pre-commit hook found. Leaving it untouched."
-else
-  if node -e "const pkg=require('./package.json'); process.exit(pkg.scripts && pkg.scripts.test ? 0 : 1);" 2>/dev/null; then
-    echo "Detected 'test' script. Injecting pre-commit hook..."
-    cat << 'EOF' > .husky/pre-commit
-#!/bin/sh
-npm test
-EOF
-    # Rewrite with correct PM
-    echo "#!/bin/sh" > .husky/pre-commit
-    echo "$RUN_CMD test" >> .husky/pre-commit
-    chmod +x .husky/pre-commit
-  else
-    echo "[INFO] No 'test' script found. Skipping pre-commit hook creation."
+  # Detect PM — prefer lockfile in root, fall back to local
+  local PM
+  PM=$(detect_pm "$ROOT_DIR")
+  if [ "$PM" = "npm" ]; then
+    PM=$(detect_pm ".")
   fi
-fi
+  echo "[INFO] Package manager: $PM"
 
-# --- Pre-push: branch protection (this script always owns this file) ---
-echo "Injecting branch protection pre-push hook..."
-cat << 'EOF' > .husky/pre-push
+  # --- Install commands ---
+  local INSTALL_CMD RUN_CMD
+  case "$PM" in
+    bun)  INSTALL_CMD="bun add --dev husky" ;;
+    pnpm) INSTALL_CMD="pnpm add --save-dev husky" ;;
+    yarn) INSTALL_CMD="yarn add --dev husky" ;;
+    *)    INSTALL_CMD="npm install --save-dev husky" ;;
+  esac
+  case "$PM" in
+    bun)  RUN_CMD="bun run" ;;
+    pnpm) RUN_CMD="pnpm run" ;;
+    yarn) RUN_CMD="yarn" ;;
+    *)    RUN_CMD="npm run" ;;
+  esac
+
+  # --- Check if husky is already installed ---
+  if node -e "require('husky')" 2>/dev/null; then
+    echo "[INFO] Husky already installed. Skipping installation."
+  else
+    echo "Installing Husky via $PM..."
+    $INSTALL_CMD
+  fi
+
+  # --- Add prepare script only if not already present ---
+  if ! node -e "const p=require('./package.json'); process.exit(p.scripts && p.scripts.prepare ? 0 : 1);" 2>/dev/null; then
+    node -e "
+      const fs = require('fs');
+      const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
+      pkg.scripts = pkg.scripts || {};
+      pkg.scripts.prepare = 'husky';
+      fs.writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+    "
+    echo "[INFO] Added 'prepare': 'husky' to package.json"
+  else
+    echo "[INFO] 'prepare' script already exists. Skipping."
+  fi
+
+  mkdir -p .husky
+
+  # --- Pre-commit: skip if already exists ---
+  if [ -s ".husky/pre-commit" ]; then
+    echo "[INFO] Existing pre-commit hook found. Leaving it untouched."
+  else
+    if node -e "const pkg=require('./package.json'); process.exit(pkg.scripts && pkg.scripts.test ? 0 : 1);" 2>/dev/null; then
+      echo "Detected 'test' script. Injecting pre-commit hook..."
+      printf '#!/bin/sh\n%s test\n' "$RUN_CMD" > .husky/pre-commit
+      chmod +x .husky/pre-commit
+    else
+      echo "[INFO] No 'test' script found. Skipping pre-commit hook."
+    fi
+  fi
+
+  # --- Pre-push: branch protection ---
+  echo "Injecting branch protection pre-push hook..."
+  cat << 'EOF' > .husky/pre-push
 #!/bin/sh
-
 PROTECTED_BRANCHES="main dev test"
 
 block_push() {
@@ -119,11 +125,45 @@ done
 
 exit 0
 EOF
+  chmod +x .husky/pre-push
 
-chmod +x .husky/pre-push
+  echo "[SUCCESS] Hooks configured in $PKG_DIR"
+  cd "$ROOT_DIR"
+}
 
+# -------------------------------------------------------
+# Entry point: discover where to run
+# -------------------------------------------------------
+ROOT_DIR=$(pwd)
+
+if [ ! -f "package.json" ] && [ -z "$(find . -maxdepth 2 -name 'package.json' 2>/dev/null)" ]; then
+  echo "[ERROR] No package.json found in $(pwd) or any subdirectory."
+  exit 1
+fi
+
+# Collect all targets: root + 1 level deep subdirs that have package.json
+TARGETS=()
+[ -f "package.json" ] && TARGETS+=("$ROOT_DIR")
+while IFS= read -r pkg; do
+  dir=$(dirname "$pkg")
+  # Skip node_modules anywhere in the path
+  case "$dir" in
+    *node_modules*) continue ;;
+  esac
+  [ "$dir" != "$ROOT_DIR" ] && TARGETS+=("$dir")
+done < <(find . -maxdepth 2 -name "package.json" ! -path "*/node_modules/*" 2>/dev/null)
+
+# Deduplicate
+TARGETS=($(printf '%s\n' "${TARGETS[@]}" | sort -u))
+
+echo "Found ${#TARGETS[@]} package(s) to configure:"
+for t in "${TARGETS[@]}"; do echo "  - $t"; done
+
+for target in "${TARGETS[@]}"; do
+  setup_husky "$target" "$ROOT_DIR"
+done
+
+echo ""
 echo "=========================================================="
-echo "[SUCCESS] Configuration complete."
-echo "Package manager: $PM"
-echo "Pre-push validation enforced on main, dev, and test."
+echo "[DONE] All packages configured."
 echo "=========================================================="
